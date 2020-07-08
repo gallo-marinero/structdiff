@@ -122,7 +122,7 @@ bondorder=False
 steinhardt=True
 # Specify whether Steinhardt parameters are going to be evaluated for metals
 # only too 
-tetra=True
+tetra=False
 values=[2,4,6,8,10,12,14]
 average=False
 weighted=False
