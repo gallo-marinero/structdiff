@@ -1,2 +1,2 @@
 # structdiff
-Find too distorted structures after optimization
+Find too distorted structures after geometry optimization with VASP
