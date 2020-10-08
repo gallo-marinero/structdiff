@@ -10,13 +10,18 @@ from mpl_toolkits.mplot3d import Axes3D
 #___READ STRUCTURES___
 #
 # Define path to the folder where all files are contained
-directory='/home/gallo/work/struct_descriptors/d1/m5/test/'
+directory='/home/gallo/work/struct_descriptors/converged_evolution/set/'
+#directory='/home/gallo/work/struct_descriptors/555_50-50/set/'
 # Define the file that is going to be read (OUTCAR or POSTCAR)
 # If POSTCAR, then read as: ase.io.vasp.read_vasp("/POSCAR")
 outcar='/CONTCAR'
 # All structures are stored in the dict 'structures'
 structures={}
-for dir_structure in os.listdir(directory):
+# Get all the folders (structures) in 'directory', unordered
+liststr=os.listdir(directory)
+# Order them
+liststr.sort()
+for dir_structure in liststr:
 # Loading the VASP converged structure (either POSCAR or OUTCAR)
     cell_dir=directory+dir_structure+outcar
     # Check if OUTCAR is gzipped and if so, unzip it
@@ -53,6 +58,10 @@ v=False
 #print(cell.symbols)
 # View the structure in rasmol
 #view(cell, viewer='rasmol')
+
+# Go to directory before the folders with structures
+os.chdir(directory)
+os.chdir("..")
 
 for name, (box,positions, index, at_num, symbols) in structures.items():
     print(name, len(positions))
@@ -92,6 +101,7 @@ def get_feat(box, positions, structure, values, average, weighted, descriptor, w
         order[descriptor+'{}'.format(l)] = featl.order
     return order, features
 
+# Compute SOPs for the environment of the metal atoms
 def get_feat_metal(box, positions, at_num, structure, values, average, weighted, descriptor, what):
     aq = freud.locality.AABBQuery(box,positions)
     nlist=aq.query(positions,{'mode':'nearest','num_neighbors':4}).toNeighborList()
@@ -107,6 +117,15 @@ def get_feat_metal(box, positions, at_num, structure, values, average, weighted,
         order[descriptor+'{}'.format(l)] = featl.order
     return order, features
 
+# Computes clusters of particles' local environments
+def get_env_motifmatch(system, motif, threshold, num_neighs,
+        registration=False):
+    neighs = {'num_neighbors': num_neighs}
+    match = freud.environment.EnvironmentMotifMatch()
+    match.compute(system, motif, threshold, neighbors=neighs,
+            registration=registration)
+    return match.matches
+
 # Compute Bond Order parameters
 def get_bondorder(box, positions, structure, bins):
     bondorder = freud.environment.BondOrder(bins)
@@ -120,17 +139,19 @@ def get_bondorder(box, positions, structure, bins):
 bins=3
 bondorder=False
 steinhardt=True
+env_motifmatch=False
+motif_name='Li20X2Y2Z16A4B4'
 # Specify whether Steinhardt parameters are going to be evaluated for metals
 # only too 
 tetra=False
-values=[2,4,6,8,10,12,14]
+values=[2,4,6,8,10,12,14,16,18,20]
 average=False
 weighted=False
 descriptor='q'
 # Create a prefix to indicate whether parameters are averaged or not
 prefix=''
 if average:
-    prefix='average_'
+    prefix='averaged_'
 if weighted:
     prefix +='weighted_'
 # Dict that stores 'Ql' Steinhard parameters, as 'name':'ql', being l the number
@@ -139,23 +160,32 @@ structure_feat={}
 structure_order={}
 # Dict containing the bond order parameter
 structure_bondorder={}
-# Plotting reasons: find inferior and superior limits for the descriptor values, and use them in the plot
-range_min=[]
-range_max=[]
-if steinhardt:
-# For each 'name', i.e.: VASP optimized structure, call the function get_features and calculate Voronoi
-# neighbors and Ql
-    for name, (box, positions,index,at_num,symbols) in structures.items():
-        #structure_order[name], structure_feat[name] = get_feat(box, positions, name, values, average, weighted, descriptor, 'particle_order')
-        structure_order[name], structure_feat[name] = get_feat_metal(box, positions, at_num, name, values, average, weighted, descriptor, 'particle_order')
-elif bondorder:
-    for name, (box, positions,index,at_num,symbols) in structures.items():
+# Dict containing the environment cluster indices
+env_cluster_idx={}
+# and environment
+env_cluster_env={}
+# For each 'name', i.e.: for each VASP optimized structure, call the selected function
+for name, (box, positions,index,at_num,symbols) in structures.items():
+    if steinhardt:
+# get_features and calculate Voronoi neighbors and Ql
+        if tetra:
+            structure_order[name], structure_feat[name] = get_feat_metal(box, positions, at_num, name, values, average, weighted, descriptor, 'particle_order')
+        else:
+            structure_order[name], structure_feat[name] = get_feat(box, positions, name, values, average, weighted, descriptor, 'particle_order')
+# Get Bond Orders 
+    elif bondorder:
         structure_bondorder[name] = get_bondorder(box, positions, name, bins)
-    # Print name, number of neighbors and neighbors
-    #print(name,len(structure_nlist[name].neighbor_counts),structure_nlist[name].neighbor_counts)
-    #print(name)
-    #print(structure_feat[name])
-    #print()
+# Get Environment Cluster
+    elif env_motifmatch:
+        if name==motif_name:
+# Store the motif (given by name in motif_name) in variable motif
+            motif=structures[name][1]
+            print('Selected motif structure (with type) is:')
+            print(name,type(motif))
+# Store the system in system variable 
+        system = freud.AABBQuery(box, positions)
+#        env_motifmatch_match[name], env_cluster_env[name] = get_env_motifmatch(system,
+#            num_neighs=4, threshold=0.0, registration=False, global_search=False)
 
 if bondorder:
     for name in structure_order.keys():
