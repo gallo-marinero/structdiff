@@ -3,6 +3,7 @@ from ase import Atoms
 from sh import gunzip
 from ase.visualize import view
 import numpy as np
+import statistics as st
 from matplotlib import use
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -91,15 +92,22 @@ def get_feat(box, positions, structure, values, average, weighted, descriptor, w
     nlist.filter(nlist.weights > 0.1)
     features = {}
     order = {}
+    var = {}
     wl=False
     if descriptor=='w':
         wl=True
     for l in values:
         featl = freud.order.Steinhardt(l=l, average=average, wl=wl, weighted=weighted)
         featl.compute(system=(box, positions), neighbors=nlist)
+# Get the Steinhardt order parameters for each 'l'        
         features[descriptor+'{}'.format(l)] = getattr(featl,what)
+# Get the global order of Steinhardt order parameters for each 'l'        
         order[descriptor+'{}'.format(l)] = featl.order
-    return order, features
+# Get the variance of Steinhardt order parameters for each 'l'        
+# Due to a bug in statistics, the variance must be calculated from np.array and
+# precission = 64 (https://bugs.python.org/issue39218)
+        var[descriptor+'{}'.format(l)] = st.variance(np.array(features[descriptor+'{}'.format(l)], dtype=np.float64))
+    return order, features, var
 
 # Compute SOPs for the environment of the metal atoms
 def get_feat_metal(box, positions, at_num, structure, values, average, weighted, descriptor, what):
@@ -107,15 +115,20 @@ def get_feat_metal(box, positions, at_num, structure, values, average, weighted,
     nlist=aq.query(positions,{'mode':'nearest','num_neighbors':4}).toNeighborList()
     features = {}
     order = {}
+    var = {}
     wl=False
     if descriptor=='w':
         wl=True
     for l in values:
         featl = freud.order.Steinhardt(l=l, average=average, wl=wl, weighted=weighted)
         featl.compute(system=(box, positions), neighbors=nlist)
+# Get the Steinhardt order parameters for each 'l'        
         features[descriptor+'{}'.format(l)] = getattr(featl,what)
+# Get the global order of Steinhardt order parameters for each 'l'        
         order[descriptor+'{}'.format(l)] = featl.order
-    return order, features
+# Get the variance of Steinhardt order parameters for each 'l'        
+        var[descriptor+'{}'.format(l)] = st.variance(np.array(features[descriptor+'{}'.format(l)], dtype=np.float64))
+    return order, features, var
 
 # Computes clusters of particles' local environments
 def get_env_motifmatch(system, motif, threshold, num_neighs,
@@ -156,6 +169,8 @@ if weighted:
     prefix +='weighted_'
 # Dict that stores 'Ql' Steinhard parameters, as 'name':'ql', being l the number
 structure_feat={}
+# Dict that stores the variance of the 'Ql' Steinhard parameters, as 'name':'ql', being l the number
+structure_var={}
 # Dict containing the system wide normalization of the Ql/Wl order parameter
 structure_order={}
 # Dict containing the bond order parameter
@@ -169,9 +184,9 @@ for name, (box, positions,index,at_num,symbols) in structures.items():
     if steinhardt:
 # get_features and calculate Voronoi neighbors and Ql
         if tetra:
-            structure_order[name], structure_feat[name] = get_feat_metal(box, positions, at_num, name, values, average, weighted, descriptor, 'particle_order')
+            structure_order[name], structure_feat[name], structure_var[name] = get_feat_metal(box, positions, at_num, name, values, average, weighted, descriptor, 'particle_order')
         else:
-            structure_order[name], structure_feat[name] = get_feat(box, positions, name, values, average, weighted, descriptor, 'particle_order')
+            structure_order[name], structure_feat[name], structure_var[name] = get_feat(box, positions, name, values, average, weighted, descriptor, 'particle_order')
 # Get Bond Orders 
     elif bondorder:
         structure_bondorder[name] = get_bondorder(box, positions, name, bins)
@@ -192,23 +207,35 @@ if bondorder:
         print(name,structure_bondorder[name][0])
      
 if steinhardt:
-# Write the system wide normalization of the ql/wl order parameters to a file
+# Write to file:
+# the system wide normalization of the ql/wl order parameters 
+# the variance of the Steinhardt order params
     filename=prefix+descriptor
     orderfile=filename+'_order.txt'
-    with open(orderfile, 'w') as f:
+    varfile=filename+'_var.txt'
+    with open(orderfile, 'w') as f, open(varfile, 'w') as fv:
     # Write header with the names of the columns
         f.write('Structure\t')
+        fv.write('Structure\t')
         for l in values:
             f.write(descriptor+str(l)+' ')
+            fv.write(descriptor+str(l)+' ')
         f.write('\n')
+        fv.write('\n')
     # Write the name of the structure and the calculated values
         for name in structure_order.keys():
             f.write(name+'\t')
-            lists = [ structure_order[name][descriptor+str(l)] for l in values ]
+            fv.write(name+'\t')
+            orderlst = [ structure_order[name][descriptor+str(l)] for l in values ]
+            varlst = [ structure_var[name][descriptor+str(l)] for l in values ]
             for i in range(len(values)):
-                f.write(str(lists[i])+' ')
+                f.write(str(orderlst[i])+' ')
+                fv.write(str(varlst[i])+' ')
             f.write('\n')
+            fv.write('\n')
     f.close()
+    fv.close()
+#print(range_max=np.amax(range_max))
 #print(range_min=np.amin(range_min))
 #print(range_max=np.amax(range_max))
 # Trial to find neighbors from a cell (box and positions)
@@ -220,7 +247,12 @@ if steinhardt:
         fname=filename+'{}'.format(l)
         plt.figure(figsize=(5, 5), dpi=200)
         for name in structures.keys():
-            plt.hist(structure_feat[name][descriptor+str(l)], bins=20, label=name, alpha=0.7)
+# Print variance too in the legend
+            var=str(round(structure_var[name][descriptor+str(l)],5))
+# Print global order parameter too in the legend
+            order=str(round(structure_order[name][descriptor+str(l)],3))
+            plt.hist(structure_feat[name][descriptor+str(l)], bins=20,
+                    label=name+' '+order+' '+var, alpha=0.7)
 #plt.hist(structure_feat[name][calc], range=(range_min, range_max), bins=80, label=name, alpha=0.7)
 #plt.title(r'$q_{{{l}}}$'.format(l=l))
         plt.ylabel("Frequency", fontsize=14)
