@@ -11,8 +11,8 @@ from mpl_toolkits.mplot3d import Axes3D
 #___READ STRUCTURES___
 #
 # Define path to the folder where all files are contained
-directory='/home/gallo/work/struct_descriptors/converged_evolution/set/'
-#directory='/home/gallo/work/struct_descriptors/555_50-50/set/'
+#directory='/home/gallo/work/struct_descriptors/converged_evolution/set/'
+directory='/home/gallo/work/struct_descriptors/555_50-50/set/'
 # Define the file that is going to be read (OUTCAR or POSTCAR)
 # If POSTCAR, then read as: ase.io.vasp.read_vasp("/POSCAR")
 outcar='/CONTCAR'
@@ -131,13 +131,12 @@ def get_feat_metal(box, positions, at_num, structure, values, average, weighted,
     return order, features, var
 
 # Computes clusters of particles' local environments
-def get_env_motifmatch(system, motif, threshold, num_neighs,
-        registration=False):
+def get_env_motifmatch(system, motif, threshold, num_neighs, registration):
     neighs = {'num_neighbors': num_neighs}
+    print(neighs)
     match = freud.environment.EnvironmentMotifMatch()
-    match.compute(system, motif, threshold, neighbors=neighs,
-            registration=registration)
-    return match.matches
+    match.compute(system, motif, threshold, neighbors=neighs, registration=registration)
+    return match.matches, match.point_environments
 
 # Compute Bond Order parameters
 def get_bondorder(box, positions, structure, bins):
@@ -151,16 +150,16 @@ def get_bondorder(box, positions, structure, bins):
 # Define here what you want to calculate
 bins=3
 bondorder=False
-steinhardt=True
-env_motifmatch=False
+steinhardt=False
+env_motifmatch=True
 motif_name='Li20X2Y2Z16A4B4'
 # Specify whether Steinhardt parameters are going to be evaluated for metals
 # only too 
 tetra=False
 values=[2,4,6,8,10,12,14,16,18,20]
-average=False
-weighted=False
-descriptor='q'
+average=True
+weighted=True
+descriptor='w'
 # Create a prefix to indicate whether parameters are averaged or not
 prefix=''
 if average:
@@ -179,6 +178,15 @@ structure_bondorder={}
 env_cluster_idx={}
 # and environment
 env_cluster_env={}
+# Dict containing the matches
+env_motifmatch_match={}
+# Dict containing the environments
+env_motifmatch_env={}
+if env_motifmatch:
+# Store the motif (given by name in motif_name) in variable motif
+    motif=structures[motif_name][1]
+    print('Selected motif structure (with type) is:')
+    print(motif_name,type(motif))
 # For each 'name', i.e.: for each VASP optimized structure, call the selected function
 for name, (box, positions,index,at_num,symbols) in structures.items():
     if steinhardt:
@@ -192,15 +200,13 @@ for name, (box, positions,index,at_num,symbols) in structures.items():
         structure_bondorder[name] = get_bondorder(box, positions, name, bins)
 # Get Environment Cluster
     elif env_motifmatch:
-        if name==motif_name:
-# Store the motif (given by name in motif_name) in variable motif
-            motif=structures[name][1]
-            print('Selected motif structure (with type) is:')
-            print(name,type(motif))
 # Store the system in system variable 
-        system = freud.AABBQuery(box, positions)
-#        env_motifmatch_match[name], env_cluster_env[name] = get_env_motifmatch(system,
-#            num_neighs=4, threshold=0.0, registration=False, global_search=False)
+        system=(box,positions)
+        env_motifmatch_match[name], env_motifmatch_env[name] = get_env_motifmatch(system, motif,
+                threshold=.20, num_neighs=1000, registration=True)
+        print(name,env_motifmatch_match[name])
+        print('points', env_motifmatch_env[name][0], system[1])
+        print('neighs', env_motifmatch_env[name][1])
 
 if bondorder:
     for name in structure_order.keys():
