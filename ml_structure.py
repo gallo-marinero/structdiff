@@ -1,4 +1,6 @@
-import freud, sys, ase.io.vasp, os, collections, csv, json, re
+import freud, sys, ase.io.vasp, os, collections, csv, json, re, ase
+from scipy.spatial import procrustes
+from scipy.spatial.distance import directed_hausdorff
 from ase import Atoms
 from sh import gunzip
 from ase.visualize import view
@@ -133,7 +135,6 @@ def get_feat_metal(box, positions, at_num, structure, values, average, weighted,
 # Computes clusters of particles' local environments
 def get_env_motifmatch(system, motif, threshold, num_neighs, registration):
     neighs = {'num_neighbors': num_neighs}
-    print(neighs)
     match = freud.environment.EnvironmentMotifMatch()
     match.compute(system, motif, threshold, neighbors=neighs, registration=registration)
     return match.matches, match.point_environments
@@ -152,7 +153,8 @@ bins=3
 bondorder=False
 steinhardt=False
 env_motifmatch=True
-motif_name='Li20X2Y2Z16A4B4'
+#motif_name='Li20X2Y2Z16A4B4'
+motif_name='Li20P2Ru2Se16F4F4'
 # Specify whether Steinhardt parameters are going to be evaluated for metals
 # only too 
 tetra=False
@@ -202,11 +204,16 @@ for name, (box, positions,index,at_num,symbols) in structures.items():
     elif env_motifmatch:
 # Store the system in system variable 
         system=(box,positions)
-        env_motifmatch_match[name], env_motifmatch_env[name] = get_env_motifmatch(system, motif,
-                threshold=.20, num_neighs=1000, registration=True)
-        print(name,env_motifmatch_match[name])
-        print('points', env_motifmatch_env[name][0], system[1])
-        print('neighs', env_motifmatch_env[name][1])
+# Compute dissimilarty test from scipy.procrustes
+        std_motif, std_str, disparity=procrustes(motif,positions)
+# Compute Hausdorff distance from scipy.spatial
+        print('Analyzing system:', name)
+        print('Hausdorff distance',directed_hausdorff(motif,positions))
+        print('Disparity', disparity)
+        env_motifmatch_match[name], env_motifmatch_env[name] = get_env_motifmatch(system,
+                motif,threshold=.05, num_neighs=100, registration=True)
+        print('Environment Motif Match analysis against', motif_name)
+        print(env_motifmatch_match[name],'\n')
 
 if bondorder:
     for name in structure_order.keys():
