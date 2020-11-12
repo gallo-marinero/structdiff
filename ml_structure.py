@@ -1,10 +1,11 @@
-import freud, sys, ase.io.vasp, os, collections, csv, json, re, ase
-from scipy.spatial import procrustes
-from scipy.spatial.distance import directed_hausdorff
+import freud, sys, ase.io.vasp, os, collections, csv, json, re
 from ase import Atoms
 from sh import gunzip
+from scipy.spatial import procrustes
+from scipy.spatial.distance import directed_hausdorff
 from ase.visualize import view
 import numpy as np
+import pyscal.core as pc
 import statistics as st
 from matplotlib import use
 import matplotlib.pyplot as plt
@@ -17,16 +18,18 @@ from mpl_toolkits.mplot3d import Axes3D
 directory='/home/gallo/work/struct_descriptors/555_50-50/set/'
 # Define the file that is going to be read (OUTCAR or POSTCAR)
 # If POSTCAR, then read as: ase.io.vasp.read_vasp("/POSCAR")
-outcar='/CONTCAR'
+car='/POSCAR'
 # All structures are stored in the dict 'structures'
 structures={}
+# All structures are stored in the dict 'str_pyscal' for pyscal analysis
+str_pc={}
 # Get all the folders (structures) in 'directory', unordered
 liststr=os.listdir(directory)
 # Order them
 liststr.sort()
 for dir_structure in liststr:
 # Loading the VASP converged structure (either POSCAR or OUTCAR)
-    cell_dir=directory+dir_structure+outcar
+    cell_dir=directory+dir_structure+car
     # Check if OUTCAR is gzipped and if so, unzip it
     if os.path.isfile(cell_dir+'.gz'):
         gunzip(cell_dir+'.gz')
@@ -52,16 +55,11 @@ for dir_structure in liststr:
 #    structures[str(cell.symbols)]=[box,positions]
 # Set as filename the name of the folder (from the DFT calculation)
     structures[str(dir_structure)]=[box,positions,index,at_num,symbols]
+# Read structures for pyscal
+    str_pc[str(dir_structure)]=pc.System()
+    str_pc[str(dir_structure)].read_inputfile(cell_dir,format='poscar')
     
 v=False
-# Some commands
-#cell.get_cell()
-#cell.get_chemical_symbols()
-# Print the name of the structure
-#print(cell.symbols)
-# View the structure in rasmol
-#view(cell, viewer='rasmol')
-
 # Go to directory before the folders with structures
 os.chdir(directory)
 os.chdir("..")
@@ -74,7 +72,6 @@ if v:
     print("The length vector: {}".format(box.L))
 # Print the size of the box for cell as read from VASP converged file
     print("The length vector: {}".format(cell.cell.lengths()))
-    #print("Extended: {}".format(box))
 
 #fig = plt.figure()
 #ax = fig.add_subplot(111, projection='3d')
@@ -147,18 +144,26 @@ def get_bondorder(box, positions, structure, bins):
     return bondorder_arr
 
 #___INPUT DEFINITION___
-#
-# Define here what you want to calculate
+
+#  PYSCAL DEFINITIONS
+steinhardt_pc=True
+# Define whether SOPs are averaged
+averaged=True
+# Choose exponent for neighbour search
+voroexp=1
+# Exponents for the SOPs (must be 2)
+pc_vals=[2,4]
+
+# FREUD DEFINITIONS
 bins=3
 bondorder=False
 steinhardt=False
-env_motifmatch=True
-#motif_name='Li20X2Y2Z16A4B4'
-motif_name='Li20P2Ru2Se16F4F4'
+env_motifmatch=False
+motif_name='Li20X2Y2Z16A4B4'
 # Specify whether Steinhardt parameters are going to be evaluated for metals
 # only too 
 tetra=False
-values=[2,4,6,8,10,12,14,16,18,20]
+values=[2,4]
 average=True
 weighted=True
 descriptor='w'
@@ -184,6 +189,28 @@ env_cluster_env={}
 env_motifmatch_match={}
 # Dict containing the environments
 env_motifmatch_env={}
+
+# Evaluate SOPs with pyscal
+# Dict to store the SOPs
+q_pc={}
+if steinhardt_pc:
+    for name in structures:
+        str_pc[name].find_neighbors(method='voronoi', voroexp=voroexp)
+        str_pc[name].calculate_q(values, averaged=averaged)
+        q_pc[name]=str_pc[name].get_qvals(pc_vals)
+# Plot the results        
+        plt.scatter(q_pc[name][0],q_pc[name][1],label=name)
+        plt.xlabel("$q_{%i}$" % (pc_vals[0]), fontsize=10)
+        plt.ylabel("$q_{%i}$" % (pc_vals[1]), fontsize=10)
+        plt.legend(fontsize=10)
+# Save the plot        
+        if averaged:
+            plt.title('pc q'+str(pc_vals[0])+'-'+str(pc_vals[1])+' vorexp='+str(voroexp)+' avrg')
+            plt.savefig('pc_q'+str(pc_vals[0])+'-'+str(pc_vals[1])+'_vorexp'+str(voroexp)+'_avrg')
+        else:
+            plt.title('pc q'+str(pc_vals[0])+'-'+str(pc_vals[1])+' vorexp='+str(voroexp))
+            plt.savefig('pc_q'+str(pc_vals[0])+'-'+str(pc_vals[1])+'_vorexp'+str(voroexp))
+
 if env_motifmatch:
 # Store the motif (given by name in motif_name) in variable motif
     motif=structures[motif_name][1]
@@ -207,13 +234,13 @@ for name, (box, positions,index,at_num,symbols) in structures.items():
 # Compute dissimilarty test from scipy.procrustes
         std_motif, std_str, disparity=procrustes(motif,positions)
 # Compute Hausdorff distance from scipy.spatial
-        print('Analyzing system:', name)
+        print('\nAnalyzing system:', name)
         print('Hausdorff distance',directed_hausdorff(motif,positions))
         print('Disparity', disparity)
-        env_motifmatch_match[name], env_motifmatch_env[name] = get_env_motifmatch(system,
-                motif,threshold=.05, num_neighs=100, registration=True)
+        env_motifmatch_match[name], env_motifmatch_env[name] = get_env_motifmatch(system, motif,
+                threshold=.20, num_neighs=1000, registration=True)
         print('Environment Motif Match analysis against', motif_name)
-        print(env_motifmatch_match[name],'\n')
+        print(name,env_motifmatch_match[name])
 
 if bondorder:
     for name in structure_order.keys():
