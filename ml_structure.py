@@ -3,7 +3,8 @@ from ase import Atoms
 from sh import gunzip
 from scipy.spatial import procrustes
 from scipy.spatial.distance import directed_hausdorff
-from ase.visualize import view
+from ase.build import make_supercell
+from ase.io import read
 import numpy as np
 import pyscal.core as pc
 import statistics as st
@@ -19,7 +20,7 @@ directory='/home/gallo/work/struct_descriptors/555_50-50/set/'
 # Define the file that is going to be read (OUTCAR or POSTCAR)
 # If POSTCAR, then read as: ase.io.vasp.read_vasp("/POSCAR")
 car='/POSCAR'
-# All structures are stored in the dict 'structures'
+# Store systems in the dict 'structures'
 structures={}
 # All structures are stored in the dict 'str_pyscal' for pyscal analysis
 str_pc={}
@@ -27,6 +28,8 @@ str_pc={}
 liststr=os.listdir(directory)
 # Order them
 liststr.sort()
+# List with the metal atoms
+mlist=[]
 for dir_structure in liststr:
 # Loading the VASP converged structure (either POSCAR or OUTCAR)
     cell_dir=directory+dir_structure+car
@@ -35,6 +38,9 @@ for dir_structure in liststr:
         gunzip(cell_dir+'.gz')
     cell = ase.io.vasp.read_vasp(cell_dir)
     cell.set_pbc((True, True, True))
+# Instructions to build a supercell
+#    p=[[2,0,0],[0,2,0],[0,0,2]]
+#    cell=make_supercell(origcell,p)
 # 'structures' is a dictionary with the name of the system ('name') as key and ['box', 'positions'] as value:
 # box in structures[name][0]
 # positions in structures[name][1]
@@ -43,6 +49,11 @@ for dir_structure in liststr:
     index=[]
     at_num=[]
     symbols=np.array(cell.get_chemical_symbols())
+# Split the name to get the metal, which is in position 2
+    split=list(filter(None,re.split('(\d+)',dir_structure)))
+# Append metal to the list with the metals
+    mlist.append(split[2])
+    mlist.append(split[4])
     for at in cell:
         index.append(at.index)
         at_num.append(at.number)
@@ -57,8 +68,10 @@ for dir_structure in liststr:
     structures[str(dir_structure)]=[box,positions,index,at_num,symbols]
 # Read structures for pyscal
     str_pc[str(dir_structure)]=pc.System()
-    str_pc[str(dir_structure)].read_inputfile(cell_dir,format='poscar')
+    str_pc[str(dir_structure)].read_inputfile(cell,format='ase',customkeys='symbols')
     
+# Remove duplicates from the list of metals
+mlist=list(dict.fromkeys(mlist))
 v=False
 # Go to directory before the folders with structures
 os.chdir(directory)
@@ -88,6 +101,7 @@ def get_feat(box, positions, structure, values, average, weighted, descriptor, w
     voro = freud.locality.Voronoi()
     voro.compute(system=(box, positions))
     nlist = voro.nlist.copy()
+    print(voro.volumes)
     nlist.filter(nlist.weights > 0.1)
     features = {}
     order = {}
@@ -195,7 +209,46 @@ env_motifmatch_env={}
 q_pc={}
 if steinhardt_pc:
     for name in structures:
-        str_pc[name].find_neighbors(method='voronoi', voroexp=voroexp)
+        print('\n'+name)
+        print('Module', 'M', 'vCN', 'vVol', 'vAvVol', '       Chiparams        ',
+                ' TetrAng',' vVector')
+# FREUD
+        voro = freud.locality.Voronoi()
+        voro.compute(system=(structures[name][0], structures[name][1]))
+        nlist = voro.nlist
+# Filter neighbors with tiny weight
+        nlist.filter(nlist.weights > 0.1)
+# Get number of neighs, not the pairs        
+        neighs_count=nlist.neighbor_counts
+# Get Voronoi atomic volumes
+        vols=voro.volumes
+# PYSCAL
+#
+# Calculation of Voronoi-derived information (store different than for other
+# neighbour-finding methods)
+        vorodat=str_pc[name]
+        vorodat.find_neighbors(method='voronoi', voroexp=voroexp)
+        vorodat.calculate_vorovector()
+# Store atom objects in a variable        
+        voroatms = vorodat.atoms
+#
+# Calculation of non-Voronoi information
+        str_pc[name].find_neighbors(method='cutoff',cutoff='adaptive')
+#        str_pc[name].find_neighbors(method='number',nmax=4)
+        str_pc[name].calculate_chiparams()
+        str_pc[name].calculate_angularcriteria()
+# Store atom objects in a variable        
+        atms = str_pc[name].atoms
+# Print in screen
+# Get atomic tags
+        tag=[atm.custom['species'] for atm in atms]
+        for i in range(len(atms)):
+            if structures[name][4][i] in mlist:
+                print('freud ', structures[name][4][i], neighs_count[i], "%.2f" % vols[i])
+            if tag[i] in mlist:
+                print('pyscal', tag[i], voroatms[i].coordination, "%.2f" % voroatms[i].volume,
+                        "%.2f" % voroatms[i].avg_volume, atms[i].chiparams, "%.3f" % atms[i].angular,
+                        voroatms[i].vorovector)
         str_pc[name].calculate_q(values, averaged=averaged)
         q_pc[name]=str_pc[name].get_qvals(pc_vals)
 # Plot the results        
