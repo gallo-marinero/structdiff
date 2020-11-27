@@ -1,4 +1,4 @@
-import freud, sys, ase.io.vasp, os, collections, csv, json, re
+import freud, sys, ase.io.vasp, os, collections, csv, json, re, itertools
 from ase import Atoms
 from sh import gunzip
 from scipy.spatial import procrustes
@@ -10,13 +10,12 @@ import pyscal.core as pc
 import statistics as st
 from matplotlib import use
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 
 #___READ STRUCTURES___
 #
-# Define path to the folder where all files are contained
-#directory='/home/gallo/work/struct_descriptors/converged_evolution/set/'
-directory='/home/gallo/work/struct_descriptors/555_50-50/set/'
+# Go to the execution directory. A folder named 'set' with the structures must
+# be present
+os.chdir(os.getcwd())
 # Define the file that is going to be read (OUTCAR or POSTCAR)
 # If POSTCAR, then read as: ase.io.vasp.read_vasp("/POSCAR")
 car='/POSCAR'
@@ -25,14 +24,15 @@ structures={}
 # All structures are stored in the dict 'str_pyscal' for pyscal analysis
 str_pc={}
 # Get all the folders (structures) in 'directory', unordered
-liststr=os.listdir(directory)
+liststr=os.listdir('set')
 # Order them
 liststr.sort()
 # List with the metal atoms
 mlist=[]
 for dir_structure in liststr:
 # Loading the VASP converged structure (either POSCAR or OUTCAR)
-    cell_dir=directory+dir_structure+car
+# The 'set' directory must exist where the code is executed
+    cell_dir='set/'+dir_structure+car
     # Check if OUTCAR is gzipped and if so, unzip it
     if os.path.isfile(cell_dir+'.gz'):
         gunzip(cell_dir+'.gz')
@@ -44,7 +44,6 @@ for dir_structure in liststr:
 # 'structures' is a dictionary with the name of the system ('name') as key and ['box', 'positions'] as value:
 # box in structures[name][0]
 # positions in structures[name][1]
-# print(structures[name][1])
     positions=np.array(cell.get_positions())
     index=[]
     at_num=[]
@@ -57,7 +56,6 @@ for dir_structure in liststr:
     for at in cell:
         index.append(at.index)
         at_num.append(at.number)
-#        print(str(dir_structure),index,at_num)
 # Get attributes in Object (to be able to call them)
 #        for att in dir(i):
 #            print (att, getattr(i,att))
@@ -73,9 +71,6 @@ for dir_structure in liststr:
 # Remove duplicates from the list of metals
 mlist=list(dict.fromkeys(mlist))
 v=False
-# Go to directory before the folders with structures
-os.chdir(directory)
-os.chdir("..")
 
 for name, (box,positions, index, at_num, symbols) in structures.items():
     print(name, len(positions))
@@ -101,7 +96,6 @@ def get_feat(box, positions, structure, values, average, weighted, descriptor, w
     voro = freud.locality.Voronoi()
     voro.compute(system=(box, positions))
     nlist = voro.nlist.copy()
-    print(voro.volumes)
     nlist.filter(nlist.weights > 0.1)
     features = {}
     order = {}
@@ -120,6 +114,7 @@ def get_feat(box, positions, structure, values, average, weighted, descriptor, w
 # Due to a bug in statistics, the variance must be calculated from np.array and
 # precission = 64 (https://bugs.python.org/issue39218)
         var[descriptor+'{}'.format(l)] = st.variance(np.array(features[descriptor+'{}'.format(l)], dtype=np.float64))
+        print(var[descriptor+'{}'.format(l)])
     return order, features, var
 
 # Compute SOPs for the environment of the metal atoms
@@ -145,7 +140,7 @@ def get_feat_metal(box, positions, at_num, structure, values, average, weighted,
 
 # Computes clusters of particles' local environments
 def get_env_motifmatch(system, motif, threshold, num_neighs, registration):
-    neighs = {'num_neighbors': num_neighs}
+    neighs = {'mode':'nearest','num_neighbors': num_neighs}
     match = freud.environment.EnvironmentMotifMatch()
     match.compute(system, motif, threshold, neighbors=neighs, registration=registration)
     return match.matches, match.point_environments
@@ -162,25 +157,25 @@ def get_bondorder(box, positions, structure, bins):
 #  PYSCAL DEFINITIONS
 steinhardt_pc=True
 # Define whether SOPs are averaged
-averaged=True
+averaged=False
 # Choose exponent for neighbour search
 voroexp=1
-# Exponents for the SOPs (must be 2)
-pc_vals=[2,4]
+# Quantum numbers for the SOPs 
+pc_vals=[2,4,6,8]
 
 # FREUD DEFINITIONS
 bins=3
 bondorder=False
 steinhardt=False
 env_motifmatch=False
-motif_name='Li20X2Y2Z16A4B4'
+motif_name='Li16H3He1X4Y16Y4'
 # Specify whether Steinhardt parameters are going to be evaluated for metals
 # only too 
 tetra=False
-values=[2,4]
+values=[4,6]
 average=True
 weighted=True
-descriptor='w'
+descriptor='q'
 # Create a prefix to indicate whether parameters are averaged or not
 prefix=''
 if average:
@@ -210,7 +205,7 @@ q_pc={}
 if steinhardt_pc:
     for name in structures:
         print('\n'+name)
-        print('Module', 'M', 'vCN', 'vVol', 'vAvVol', '       Chiparams        ',
+        print('PyMod', 'M', 'Vor', 'Sann', 'Adpt', 'VorVol', 'vAvVol', '       Chiparams        ',
                 ' TetrAng',' vVector')
 # FREUD
         voro = freud.locality.Voronoi()
@@ -228,48 +223,121 @@ if steinhardt_pc:
 # neighbour-finding methods)
         vorodat=str_pc[name]
         vorodat.find_neighbors(method='voronoi', voroexp=voroexp)
+        vorodat.calculate_q(pc_vals, averaged=averaged)
+        q_pc[name]=vorodat.get_qvals(pc_vals)
         vorodat.calculate_vorovector()
+        for i in values:
+            vorodat.calculate_disorder(q=i,averaged=averaged)
 # Store atom objects in a variable        
-        voroatms = vorodat.atoms
+            voroatms = vorodat.atoms
+            disorder = [atm.disorder for atm in voroatms]
+            print(np.mean(disorder))
 #
 # Calculation of non-Voronoi information
+        sann=str_pc[name]
+# A 2.1 threshold avoids failure for certain template structures (Li16...)        
+        sann.find_neighbors(method='cutoff',cutoff='sann',threshold=2.1)
+        sannatms = sann.atoms
         str_pc[name].find_neighbors(method='cutoff',cutoff='adaptive')
 #        str_pc[name].find_neighbors(method='number',nmax=4)
         str_pc[name].calculate_chiparams()
         str_pc[name].calculate_angularcriteria()
+# Block to calculate & print the Radial Distribution Function (RDF)
+        rdf=str_pc[name].calculate_rdf()
+        plt.figure(0)
+        plt.plot(rdf[1],rdf[0])
+        plt.xlabel('Distance')
+        plt.title('RDF '+name)
+        plt.savefig('rdf_'+name)
+        plt.clf()
+
 # Store atom objects in a variable        
         atms = str_pc[name].atoms
 # Print in screen
 # Get atomic tags
         tag=[atm.custom['species'] for atm in atms]
+        fig, ax = plt.subplots()
+        ind=0
         for i in range(len(atms)):
+# Only print data for metallic atoms
             if structures[name][4][i] in mlist:
-                print('freud ', structures[name][4][i], neighs_count[i], "%.2f" % vols[i])
+                print('freud ', structures[name][4][i], neighs_count[i], '       ', "%.2f" % vols[i])
             if tag[i] in mlist:
-                print('pyscal', tag[i], voroatms[i].coordination, "%.2f" % voroatms[i].volume,
-                        "%.2f" % voroatms[i].avg_volume, atms[i].chiparams, "%.3f" % atms[i].angular,
-                        voroatms[i].vorovector)
-        str_pc[name].calculate_q(values, averaged=averaged)
-        q_pc[name]=str_pc[name].get_qvals(pc_vals)
-# Plot the results        
-        plt.scatter(q_pc[name][0],q_pc[name][1],label=name)
-        plt.xlabel("$q_{%i}$" % (pc_vals[0]), fontsize=10)
-        plt.ylabel("$q_{%i}$" % (pc_vals[1]), fontsize=10)
-        plt.legend(fontsize=10)
+                ind+=1
+                print('pyscal', tag[i], voroatms[i].coordination,
+                        sannatms[i].coordination, '', atms[i].coordination, "%.2f" % voroatms[i].volume,
+                        "%.2f" % voroatms[i].avg_volume, atms[i].chiparams,
+                        "%.3f" % atms[i].angular, voroatms[i].vorovector)
+# Block to print Vorovector figure                
+                prefx=('ax'+str(ind))
+                plt.figure(1)
+                if ind==1:
+                    ax.bar(np.array(range(4))-0.15, voroatms[i].vorovector,
+                            width=0.1, label=str(i)+str(tag[i]))
+                elif ind==2:
+                    ax.bar(np.array(range(4))-0.05, voroatms[i].vorovector,
+                            width=0.1, label=str(i)+str(tag[i]))
+                if ind==3:
+                    ax.bar(np.array(range(4))+0.05, voroatms[i].vorovector,
+                            width=0.1, label=str(i)+str(tag[i]))
+                if ind==4:
+                    ax.bar(np.array(range(4))+0.15, voroatms[i].vorovector,
+                            width=0.1, label=str(i)+str(tag[i]))
+
+        ax.set_xticks([1,2,3,4])
+        ax.set_xlim(0.5, 4.25)
+        ax.set_xticklabels(['$n_3$', '$n_4$', '$n_5$', '$n_6$'])
+        ax.set_ylabel("Number of faces")
+        ax.legend()
+        fig.savefig('vorovector_'+name)
+    plt.clf()
+
+# Explore all combinations (order does not matter) of the SOPs calculated as
+# specified in pc_vals
+    for j in itertools.combinations(range(len(pc_vals)),2):
+        for name in structures:
+# Plot the SOPs 
+            plt.scatter(q_pc[name][j[0]],q_pc[name][j[1]],label=name)
+            plt.xlabel("$q_{%i}$" % (pc_vals[j[0]]), fontsize=10)
+            plt.ylabel("$q_{%i}$" % (pc_vals[j[1]]), fontsize=10)
+            plt.legend(fontsize=7)
 # Save the plot        
-        if averaged:
-            plt.title('pc q'+str(pc_vals[0])+'-'+str(pc_vals[1])+' vorexp='+str(voroexp)+' avrg')
-            plt.savefig('pc_q'+str(pc_vals[0])+'-'+str(pc_vals[1])+'_vorexp'+str(voroexp)+'_avrg')
-        else:
-            plt.title('pc q'+str(pc_vals[0])+'-'+str(pc_vals[1])+' vorexp='+str(voroexp))
-            plt.savefig('pc_q'+str(pc_vals[0])+'-'+str(pc_vals[1])+'_vorexp'+str(voroexp))
+            if averaged:
+                plt.title('pc q'+str(pc_vals[j[0]])+'-'+str(pc_vals[j[1]])+' vorexp='+str(voroexp)+' avrg')
+                plt.savefig('pc_q'+str(pc_vals[j[0]])+'-'+str(pc_vals[j[1]])+'_vorexp'+str(voroexp)+'_avrg')
+            else:
+                plt.title('pc q'+str(pc_vals[j[0]])+'-'+str(pc_vals[j[1]])+' vorexp='+str(voroexp))
+                plt.savefig('pc_q'+str(pc_vals[j[0]])+'-'+str(pc_vals[j[1]])+'_vorexp'+str(voroexp))
 
 if env_motifmatch:
 # Store the motif (given by name in motif_name) in variable motif
-    motif=structures[motif_name][1]
-    print('Selected motif structure (with type) is:')
-    print(motif_name,type(motif))
+    motif=structures[motif_name]
+    aq = freud.locality.AABBQuery(motif[0],motif[1])
+# Positions of the atoms in the motif
+    pos=motif[1]
+# Variable to store the positions of the motif
+    motifpos={}
+# Define the number of neighbors to consider for motif match
+    num_neighs=12
+    print('\n--- Environment motif match ---\n')
+    print('Selected motif structure is:')
+    print(motif_name+'\n')
+    print('Find the',num_neighs,'nearest neighbors of the following atomic positions (metals):')
+    for i in range(len(motif[4])):
+# Search for the metals and find 'num_neighs' nearest neighbors
+        if motif[4][i] in mlist:
+            print(motif[2][i],motif[4][i],motif[1][i])
+# Finde num_neigh nearest neighbors            
+            ats=aq.query(motif[1][i],{'mode':'nearest','num_neighbors':num_neighs}).toNeighborList()
+# Find the vectors from target particle and its neighbors
+            neigpos=(pos[ats.point_indices]-pos[ats.query_point_indices])
+            neigpos=motif[0].wrap(neigpos)
+
+# Store in a dictionary the atomic positions of the neighbors            
+            motifpos[motif[4][i]]=neigpos
+            print(np.array(neigpos))
 # For each 'name', i.e.: for each VASP optimized structure, call the selected function
+    motif=structures[motif_name][1]
 for name, (box, positions,index,at_num,symbols) in structures.items():
     if steinhardt:
 # get_features and calculate Voronoi neighbors and Ql
@@ -283,17 +351,17 @@ for name, (box, positions,index,at_num,symbols) in structures.items():
 # Get Environment Cluster
     elif env_motifmatch:
 # Store the system in system variable 
-        system=(box,positions)
+        system=freud.AABBQuery(box,positions)
 # Compute dissimilarty test from scipy.procrustes
         std_motif, std_str, disparity=procrustes(motif,positions)
 # Compute Hausdorff distance from scipy.spatial
         print('\nAnalyzing system:', name)
         print('Hausdorff distance',directed_hausdorff(motif,positions))
         print('Disparity', disparity)
-        env_motifmatch_match[name], env_motifmatch_env[name] = get_env_motifmatch(system, motif,
-                threshold=.20, num_neighs=1000, registration=True)
+        env_motifmatch_match[name], env_motifmatch_env[name] = get_env_motifmatch(system,
+                motifpos['He'], threshold=.50, num_neighs=4, registration=True)
         print('Environment Motif Match analysis against', motif_name)
-        print(name,env_motifmatch_match[name])
+        print(env_motifmatch_match[name],env_motifmatch_env[name])
 
 if bondorder:
     for name in structure_order.keys():
@@ -328,13 +396,6 @@ if steinhardt:
             fv.write('\n')
     f.close()
     fv.close()
-#print(range_max=np.amax(range_max))
-#print(range_min=np.amin(range_min))
-#print(range_max=np.amax(range_max))
-# Trial to find neighbors from a cell (box and positions)
-#query_args=dict(mode='nearest',num_neighbors=4,exclude_ii=True)
-#neighs=freud.locality.AABBQuery(box,positions).query(positions,query_args).toNeighborList()
-#print(len(structure_features[name].distances),structure_features[name].distances)
 
     for l in values:
         fname=filename+'{}'.format(l)
@@ -353,9 +414,7 @@ if steinhardt:
         plt.legend(fontsize='xx-small')
         plt.title(fname)
         plt.savefig(fname)
-#for lh in plt.legend().legendHandles:
-#    lh.set_alpha(1)
-#plt.show()
+        plt.clf()
 # If requested to calculate only Steinhardt OPs for the 4 nearest neighbors of
 # the metal atoms
     if tetra:
@@ -394,4 +453,5 @@ if steinhardt:
                     plt.legend(fontsize='xx-small')
                     plt.title(fname+'_tetrahedra'+str(i))
                     plt.savefig(fname+'_tetrahedra'+str(i))
-
+                    plt.clf()
+            
