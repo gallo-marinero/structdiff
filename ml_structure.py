@@ -1,4 +1,5 @@
-import freud, sys, ase.io.vasp, os, collections, csv, json, re, itertools
+import freud, sys, ase.io.vasp, os, collections, csv, json, re, itertools, time
+from progress.bar import IncrementalBar
 from ase import Atoms
 from sh import gunzip
 from scipy.spatial import procrustes
@@ -10,9 +11,9 @@ import pyscal.core as pc
 import statistics as st
 from matplotlib import use
 import matplotlib.pyplot as plt
-
 #___READ STRUCTURES___
 #
+folder='set/'
 # Go to the execution directory. A folder named 'set' with the structures must
 # be present
 os.chdir(os.getcwd())
@@ -24,20 +25,27 @@ structures={}
 # All structures are stored in the dict 'str_pyscal' for pyscal analysis
 str_pc={}
 # Get all the folders (structures) in 'directory', unordered
-liststr=os.listdir('set')
+liststr=os.listdir(folder)
 # Order them
 liststr.sort()
 # List with the metal atoms
 mlist=[]
+print('\n-------------------------------------------------')
+print('Evaluation of structural descriptors for crystals')
+print('-------------------------------------------------\n')
+bar=IncrementalBar('Loading structures', max=len(liststr))
 for dir_structure in liststr:
+    bar.next()
 # Loading the VASP converged structure (either POSCAR or OUTCAR)
 # The 'set' directory must exist where the code is executed
-    cell_dir='set/'+dir_structure+car
-    # Check if OUTCAR is gzipped and if so, unzip it
-    if os.path.isfile(cell_dir+'.gz'):
+    cell_dir=folder+dir_structure+car
+    # Check if CAR is gzipped and if so, unzip it
+    if os.path.isfile(cell_dir+'.gz') and not os.path.isfile(cell_dir):
         gunzip(cell_dir+'.gz')
     cell = ase.io.vasp.read_vasp(cell_dir)
     cell.set_pbc((True, True, True))
+# Delete Lithium atoms
+    del cell[cell.numbers== 3]
 # Instructions to build a supercell
 #    p=[[2,0,0],[0,2,0],[0,0,2]]
 #    cell=make_supercell(origcell,p)
@@ -67,11 +75,13 @@ for dir_structure in liststr:
 # Read structures for pyscal
     str_pc[str(dir_structure)]=pc.System()
     str_pc[str(dir_structure)].read_inputfile(cell,format='ase',customkeys='symbols')
-    
+bar.finish()
 # Remove duplicates from the list of metals
 mlist=list(dict.fromkeys(mlist))
 v=False
 
+# Print the number of atoms considered for each structure 
+# Useful for checking whether Li atoms are or not discarded
 for name, (box,positions, index, at_num, symbols) in structures.items():
     print(name, len(positions))
 if v:
@@ -92,7 +102,8 @@ if v:
 # Also compute the Steinhard order parameters 'descriptor' for l=values
 # If descriptor='q' calculate Ql order parameters
 # If descriptor='w' calculate Wl order parameters
-def get_feat(box, positions, structure, values, average, weighted, descriptor, what):
+def get_feat(box, positions, structure, values, average, weighted,
+        wl_normalize, descriptor, what):
     voro = freud.locality.Voronoi()
     voro.compute(system=(box, positions))
     nlist = voro.nlist.copy()
@@ -104,7 +115,8 @@ def get_feat(box, positions, structure, values, average, weighted, descriptor, w
     if descriptor=='w':
         wl=True
     for l in values:
-        featl = freud.order.Steinhardt(l=l, average=average, wl=wl, weighted=weighted)
+        featl = freud.order.Steinhardt(l=l, average=average, wl=wl,
+                weighted=weighted, wl_normalize=wl_normalize)
         featl.compute(system=(box, positions), neighbors=nlist)
 # Get the Steinhardt order parameters for each 'l'        
         features[descriptor+'{}'.format(l)] = getattr(featl,what)
@@ -114,7 +126,7 @@ def get_feat(box, positions, structure, values, average, weighted, descriptor, w
 # Due to a bug in statistics, the variance must be calculated from np.array and
 # precission = 64 (https://bugs.python.org/issue39218)
         var[descriptor+'{}'.format(l)] = st.variance(np.array(features[descriptor+'{}'.format(l)], dtype=np.float64))
-        print(var[descriptor+'{}'.format(l)])
+        #print(var[descriptor+'{}'.format(l)])
     return order, features, var
 
 # Compute SOPs for the environment of the metal atoms
@@ -157,37 +169,45 @@ def get_bondorder(box, positions, structure, bins):
 #  PYSCAL DEFINITIONS
 steinhardt_pc=True
 # Define whether SOPs are averaged
-averaged=False
+#averaged=False
 # Choose exponent for neighbour search
-voroexp=1
+voroexp=2
 # Quantum numbers for the SOPs 
-pc_vals=[2,4,6,8]
+pc_vals=[2,4,6,8,10,12]
 
 # FREUD DEFINITIONS
 bins=3
 bondorder=False
-steinhardt=False
+steinhardt=True
 env_motifmatch=False
 motif_name='Li16H3He1X4Y16Y4'
 # Specify whether Steinhardt parameters are going to be evaluated for metals
 # only too 
 tetra=False
-values=[4,6]
-average=True
-weighted=True
-descriptor='q'
 # Create a prefix to indicate whether parameters are averaged or not
 prefix=''
-if average:
-    prefix='averaged_'
-if weighted:
-    prefix +='weighted_'
+#if average:
+#    prefix='averaged_'
+#if weighted:
+#    prefix +='weighted_'
 # Dict that stores 'Ql' Steinhard parameters, as 'name':'ql', being l the number
 structure_feat={}
+structure_feat_av={}
+structure_feat_wt={}
+structure_feat_avwt={}
+structure_feat_norm={}
 # Dict that stores the variance of the 'Ql' Steinhard parameters, as 'name':'ql', being l the number
 structure_var={}
+structure_var_av={}
+structure_var_wt={}
+structure_var_avwt={}
+structure_var_norm={}
 # Dict containing the system wide normalization of the Ql/Wl order parameter
 structure_order={}
+structure_order_av={}
+structure_order_wt={}
+structure_order_avwt={}
+structure_order_norm={}
 # Dict containing the bond order parameter
 structure_bondorder={}
 # Dict containing the environment cluster indices
@@ -202,12 +222,121 @@ env_motifmatch_env={}
 # Evaluate SOPs with pyscal
 # Dict to store the SOPs
 q_pc={}
+qprint={}
+q={}
+qav={}
+print('\n')
+print('! ! ! Li atoms were removed')
+print('\n')
+bar= IncrementalBar('Calculating descriptors',max=len(liststr))
 if steinhardt_pc:
+  with open('data.dat', 'w') as f, open('glb_data.dat','w') as glbf:
+# Create the headers so that pandas can appropiately read the file
+    f.write('Structure,atom,voroCN,sannCN,addCN,VorVol,vAvVol,TetrAng')
+    glbf.write('Structure')
+    for i in range(9):
+        f.write(',chipar'+str(i+1))
+# Loops over SOP parameters: 
+# Q and averaged Q parameters
+    for i in pc_vals:
+        f.write(',q_'+str(i)+',avq_'+str(i)+',wtq_'+str(i))
+        glbf.write(',q_'+str(i)+',avq_'+str(i)+',wtq_'+str(i)+',avwtq_'+str(i))
+        glbf.write(',varq_'+str(i)+',varavq_'+str(i)+',varwtq_'+str(i)+',varavwtq_'+str(i))
+# W and averaged W parameters
+    for i in pc_vals:
+        f.write(',w_'+str(i)+',avw_'+str(i)+',wtw_'+str(i))
+        glbf.write(',w_'+str(i)+',avw_'+str(i)+',wtw_'+str(i)+',avwtw_'+str(i))
+        glbf.write(',normw_'+str(i))
+        glbf.write(',varw_'+str(i)+',varavw_'+str(i)+',varwtw_'+str(i)+',varavwtw_'+str(i))
+        glbf.write(',varwnorm_'+str(i))
+    for i in pc_vals:
+        glbf.write(',dis_'+str(i))
+    f.write('\n')
     for name in structures:
-        print('\n'+name)
-        print('PyMod', 'M', 'Vor', 'Sann', 'Adpt', 'VorVol', 'vAvVol', '       Chiparams        ',
-                ' TetrAng',' vVector')
-# FREUD
+        bar.next()
+        glbf.write('\n'+name)
+#        print('\n'+name)
+#        print('PyMod', 'M', 'Vor', 'Sann', 'Adpt', 'VorVol', 'vAvVol',
+#                'TetrAng', '       Chiparams        ', ' TetrAng',' vVector')
+
+#########
+# FREUD #
+#########
+# Calculate the system wide normalization of the 𝑞𝑙or 𝑤𝑙order parameter and
+# SOPs variance
+        box=structures[name][0]
+        positions=structures[name][1]
+# Calculate q:
+        descriptor='q'
+        wl_normalize=False
+# q not averaged, not weighted
+        average=False
+        weighted=False
+        structure_order[name], structure_feat[name], structure_var[name] = get_feat(box, positions, name,
+                pc_vals, average, weighted, wl_normalize, descriptor, 'particle_order')
+# q averaged
+        average=True
+        weighted=False
+        structure_order_av[name], structure_feat_av[name], structure_var_av[name] = get_feat(box, 
+                positions, name, pc_vals, average, weighted, wl_normalize, descriptor, 'particle_order')
+# q weighted
+        average=False
+        weighted=True
+        structure_order_wt[name], structure_feat_wt[name], structure_var_wt[name] = get_feat(box, 
+                positions, name, pc_vals, average, weighted, wl_normalize, descriptor, 'particle_order')
+# q weighted and averaged
+        average=True
+        weighted=True
+        structure_order_avwt[name], structure_feat_avwt[name], structure_var_avwt[name] = get_feat(box, 
+                positions, name, pc_vals, average, weighted, wl_normalize, descriptor, 'particle_order')
+        for j in pc_vals:
+            glbf.write(','+str(structure_order[name]['q'+str(j)])+','+str(structure_order_av[name]['q'+str(j)]))
+            glbf.write(','+str(structure_order_wt[name]['q'+str(j)]))
+            glbf.write(','+str(structure_order_avwt[name]['q'+str(j)]))
+            glbf.write(','+str(structure_var[name]['q'+str(j)]))
+            glbf.write(','+str(structure_var_av[name]['q'+str(j)]))
+            glbf.write(','+str(structure_var_wt[name]['q'+str(j)]))
+            glbf.write(','+str(structure_var_avwt[name]['q'+str(j)]))
+# Calculate w:
+        descriptor='w'
+# w not averaged, not weighted
+        average=False
+        weighted=False
+        structure_order[name], structure_feat[name], structure_var[name] = get_feat(box, positions, name,
+                pc_vals, average, weighted, wl_normalize, descriptor, 'particle_order')
+# w averaged
+        average=True
+        weighted=False
+        structure_order_av[name], structure_feat_av[name], structure_var_av[name] = get_feat(box,
+                positions, name, pc_vals, average, weighted, wl_normalize, descriptor, 'particle_order')
+# w weighted
+        average=False
+        weighted=True
+        structure_order_wt[name], structure_feat_wt[name], structure_var_wt[name] = get_feat(box,
+                positions, name, pc_vals, average, weighted, wl_normalize, descriptor, 'particle_order')
+# w weighted and averaged
+        average=True
+        weighted=True
+        structure_order_avwt[name], structure_feat_avwt[name], structure_var_avwt[name] = get_feat(box,
+                positions, name, pc_vals, average, weighted, wl_normalize, descriptor, 'particle_order')
+# w weighted and averaged and normalized
+        average=False
+        weighted=False
+        wl_normalize=True
+        structure_order_norm[name], structure_feat_norm[name], structure_var_norm[name] = get_feat(box,
+                positions, name, pc_vals, average, weighted, wl_normalize, descriptor, 'particle_order')
+        for j in pc_vals:
+            glbf.write(','+str(structure_order[name]['w'+str(j)])+','+str(structure_order_av[name]['w'+str(j)]))
+            glbf.write(','+str(structure_order_wt[name]['w'+str(j)]))
+            glbf.write(','+str(structure_order_avwt[name]['w'+str(j)]))
+            glbf.write(','+str(structure_order_norm[name]['w'+str(j)]))
+            glbf.write(','+str(structure_var[name]['w'+str(j)]))
+            glbf.write(','+str(structure_var_av[name]['w'+str(j)]))
+            glbf.write(','+str(structure_var_wt[name]['w'+str(j)]))
+            glbf.write(','+str(structure_var_avwt[name]['w'+str(j)]))
+            glbf.write(','+str(structure_var_norm[name]['w'+str(j)]))
+        #orderlst = [ structure_order[name][descriptor+str(l)] for l in values ]
+        #varlst = [ structure_var[name][descriptor+str(l)] for l in values ]
         voro = freud.locality.Voronoi()
         voro.compute(system=(structures[name][0], structures[name][1]))
         nlist = voro.nlist
@@ -217,21 +346,29 @@ if steinhardt_pc:
         neighs_count=nlist.neighbor_counts
 # Get Voronoi atomic volumes
         vols=voro.volumes
-# PYSCAL
-#
+
+##########
+# PYSCAL #
+##########
 # Calculation of Voronoi-derived information (store different than for other
 # neighbour-finding methods)
         vorodat=str_pc[name]
         vorodat.find_neighbors(method='voronoi', voroexp=voroexp)
-        vorodat.calculate_q(pc_vals, averaged=averaged)
-        q_pc[name]=vorodat.get_qvals(pc_vals)
+# not averaged
+        vorodat.calculate_q(pc_vals, averaged=False)
+        q_pc[name]=vorodat.get_qvals(pc_vals, averaged=False)
+        q=q_pc[name]
         vorodat.calculate_vorovector()
-        for i in values:
-            vorodat.calculate_disorder(q=i,averaged=averaged)
+# Automatically calculate the averaged SOPs too
+        vorodat.calculate_q(pc_vals, averaged=True)
+        qav=vorodat.get_qvals(pc_vals, averaged=True)
+# Calculate the disorder of the SOPs (averaged)
+        for i in pc_vals:
+            vorodat.calculate_disorder(q=i)
 # Store atom objects in a variable        
             voroatms = vorodat.atoms
             disorder = [atm.disorder for atm in voroatms]
-            print(np.mean(disorder))
+            glbf.write(','+str(np.mean(disorder)))
 #
 # Calculation of non-Voronoi information
         sann=str_pc[name]
@@ -242,7 +379,7 @@ if steinhardt_pc:
 #        str_pc[name].find_neighbors(method='number',nmax=4)
         str_pc[name].calculate_chiparams()
         str_pc[name].calculate_angularcriteria()
-# Block to calculate & print the Radial Distribution Function (RDF)
+## Block to calculate & print the Radial Distribution Function (RDF)
         rdf=str_pc[name].calculate_rdf()
         plt.figure(0)
         plt.plot(rdf[1],rdf[0])
@@ -250,25 +387,42 @@ if steinhardt_pc:
         plt.title('RDF '+name)
         plt.savefig('rdf_'+name)
         plt.clf()
-
-# Store atom objects in a variable        
+## Store atom objects in a variable        
         atms = str_pc[name].atoms
 # Print in screen
 # Get atomic tags
         tag=[atm.custom['species'] for atm in atms]
-        fig, ax = plt.subplots()
+##        fig, ax = plt.subplots()
         ind=0
+#        print('SOP', pc_vals[1],len(q[1]),q[1])
         for i in range(len(atms)):
-# Only print data for metallic atoms
-            if structures[name][4][i] in mlist:
-                print('freud ', structures[name][4][i], neighs_count[i], '       ', "%.2f" % vols[i])
-            if tag[i] in mlist:
+## Only print data for metallic atoms
+#            if tag[i] in mlist:
                 ind+=1
-                print('pyscal', tag[i], voroatms[i].coordination,
-                        sannatms[i].coordination, '', atms[i].coordination, "%.2f" % voroatms[i].volume,
-                        "%.2f" % voroatms[i].avg_volume, atms[i].chiparams,
-                        "%.3f" % atms[i].angular, voroatms[i].vorovector)
-# Block to print Vorovector figure                
+# Break if more than 4 metals are printed (this avoids larger prints when Se is
+# present as halogen and metal)
+#                if ind == 5:
+#                    break
+                f.write('{:^15s},{:^2s},{:2},{:2},{:2},{:.4f},{:.4f},{:.4f}'.format(name,tag[i],
+                    voroatms[i].coordination,sannatms[i].coordination,atms[i].coordination,
+                    voroatms[i].volume, voroatms[i].avg_volume,atms[i].angular))
+# Loop over chiparams
+                for j in range(9):
+                    f.write(',{:3}'.format(atms[i].chiparams[j]))
+# Loop over the SOPs and print them                
+                for j in range(len(pc_vals)):
+                    f.write(','+str(q[j][i])+','+str(qav[j][i]))
+#                print(tag[i], voroatms[i].coordination,
+#                        sannatms[i].coordination, '', atms[i].coordination, "%.2f" % voroatms[i].volume,
+#                        "%.2f" % voroatms[i].avg_volume, atms[i].chiparams,
+#                        "%.3f" % atms[i].angular, voroatms[i].vorovector,q[0][i])
+                f.write('\n')
+  f.close()
+  bar.finish()
+  print('\nDone.\n')
+##        f.write('\n')
+'''        
+# Block to print Vorovector figure
                 prefx=('ax'+str(ind))
                 plt.figure(1)
                 if ind==1:
@@ -291,10 +445,13 @@ if steinhardt_pc:
         ax.legend()
         fig.savefig('vorovector_'+name)
     plt.clf()
+#    for i in pc_vals:
+#        vor_f='voro_'+i+'.txt'
+#        with open('.txt', 'w') as f:
 
 # Explore all combinations (order does not matter) of the SOPs calculated as
 # specified in pc_vals
-    for j in itertools.combinations(range(len(pc_vals)),2):
+for j in itertools.combinations(range(len(pc_vals)),2):
         for name in structures:
 # Plot the SOPs 
             plt.scatter(q_pc[name][j[0]],q_pc[name][j[1]],label=name)
@@ -308,7 +465,8 @@ if steinhardt_pc:
             else:
                 plt.title('pc q'+str(pc_vals[j[0]])+'-'+str(pc_vals[j[1]])+' vorexp='+str(voroexp))
                 plt.savefig('pc_q'+str(pc_vals[j[0]])+'-'+str(pc_vals[j[1]])+'_vorexp'+str(voroexp))
-
+        plt.clf()
+"""
 if env_motifmatch:
 # Store the motif (given by name in motif_name) in variable motif
     motif=structures[motif_name]
@@ -366,7 +524,7 @@ for name, (box, positions,index,at_num,symbols) in structures.items():
 if bondorder:
     for name in structure_order.keys():
         print(name,structure_bondorder[name][0])
-     
+
 if steinhardt:
 # Write to file:
 # the system wide normalization of the ql/wl order parameters 
@@ -455,3 +613,4 @@ if steinhardt:
                     plt.savefig(fname+'_tetrahedra'+str(i))
                     plt.clf()
             
+'''
